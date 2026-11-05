@@ -1,0 +1,73 @@
+name: Audio performance and Android compilation
+
+on:
+  push:
+    branches: [main, codex/audio-performance]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audio:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Install native test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libzstd-dev
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt ziglang==0.15.2
+          mkdir -p private/generated private/predecessor-tools/zig
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          import ziglang
+          Path('private/predecessor-tools/zig/zig-x86_64-linux-0.15.2').symlink_to(Path(ziglang.__file__).parent)
+          PY
+      - name: Check public source
+        run: .venv/bin/python tools/public_check.py
+      - name: Compile and test audio with synthetic streams
+        run: |
+          .venv/bin/python -m pytest -q \
+            Documentation/scripts/tests/test_s5_audio.py \
+            Documentation/scripts/tests/test_audio_queue_recovery.py \
+            --junitxml=private/generated/audio-tests.xml
+      - name: Install the pinned Android NDK
+        run: sdkmanager 'ndk;28.2.13676358'
+      - name: Compile player and mixer for Android arm64
+        run: .venv/bin/python tools/ci/check_android_audio.py --ndk "$ANDROID_HOME/ndk/28.2.13676358"
+      - name: Compare mixer performance and exact WAV output
+        run: |
+          git fetch --no-tags --depth=1 origin 5aa34bce71cb3f2a7bbd4263090bb3a1bb78dd27
+          .venv/bin/python tools/ci/benchmark_audio.py --baseline-ref 5aa34bce71cb3f2a7bbd4263090bb3a1bb78dd27
+          .venv/bin/python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path('private/generated/ci/audio-benchmark/result.json').read_text())
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"Synthetic mixer benchmark: {result['speedup']:.2f}x baseline speed; WAV output is byte-identical.\n\n")
+              summary.write('Measured on the Linux CI runner, not on an Android phone.\n\n')
+          PY
+      - name: Explain the build scope
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This workflow compiles and tests the audio code, and compiles the player
+          and mixer for Android arm64. It does **not** generate a playable APK.
+          The complete app still needs the private translated game inputs,
+          executable verification inputs, and the full host dependency build
+          documented in `docs/getting-started.md`.
+          EOF

@@ -798,6 +798,30 @@ def test_a_buffer_that_does_not_loop_halts_at_its_end(renderer, tmp_path):
     assert js["audio"]["ds"]["playing_at_end"] == 0
 
 
+@pytest.mark.parametrize("rate", [8000, 11025, 22050, 32000, 44100, 48000, 96000, 192000, 1073741823])
+@pytest.mark.parametrize("looping", [0, 1])
+@pytest.mark.parametrize("offset_us", [0, 7, 21])
+def test_fractional_clock_survives_block_boundaries_and_multiple_wraps(renderer, tmp_path, rate, looping, offset_us):
+    recs = start() + ds_buffer(us=T0 + offset_us, avg=rate * 4, looping=looping)
+    for frame, elapsed in enumerate([137, 502, 1001, 1987, 3227], 2):
+        recs += present(T0 + elapsed, frame)
+    rc, js, got = render(renderer(), tmp_path, recs + [END])
+    assert rc == 0 and js["audio"]["problems"]["count"] == 0
+    want = []
+    for n in range((3227 * 48000 + 999999) // 1000000):
+        elapsed = 125 * n - offset_us * 6
+        position = max(0, elapsed) * rate
+        if elapsed < 0 or (not looping and position >= 8 * 6000000):
+            want.append((0.0, 0.0))
+            continue
+        whole, fraction = divmod(position, 6000000)
+        frame = whole % 8
+        a = ds_value(frame)
+        b = ds_value((frame + 1) % 8 if looping else min(frame + 1, 7))
+        want.append(a if rate == 48000 else tuple(f32(x + (y - x) * (fraction / 6000000)) for x, y in zip(a, b)))
+    assert got == want
+
+
 def test_a_24k_buffer_is_interpolated_halfway_between_its_frames(renderer, tmp_path):
     recs = start() + ds_buffer(avg=96000) + present(T0 + 500, 2) + [END]
     rc, js, got = render(renderer(), tmp_path, recs)

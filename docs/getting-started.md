@@ -47,6 +47,24 @@ Use a Linux development machine with Bash, GCC, a C++17 compiler available as `g
 
 The tests build the installer and launcher in temporary directories. They use small synthetic files, hand-built PE images, and stand-ins for the game and player. The command runs the source-only component cases. Comparisons against a local game installation, SDL3 dialog integration, and Windows cross-compilation cases remain in the test modules but are deselected here because they require additional local inputs. A passing result does not run the game or prove gameplay compatibility.
 
+## Audio checks on GitHub Actions
+
+The **Audio performance and Android compilation** workflow runs the synthetic
+audio tests, including fractional sample rates and recovery after a live audio
+underrun. It also compiles the player and mixer for Android arm64 with NDK
+28.2.13676358. It can be started with **Run workflow** once present on the default
+branch. Its summary distinguishes these checks from a complete game build.
+
+The workflow does not generate an APK: the public checkout lacks the translated
+game and executable verification inputs needed by `android_app.py`. Its temporary
+host expectation header is a compilation fixture, not a release configuration.
+See [the full build prerequisites](#understand-the-full-build-prerequisites).
+
+The live player restores up to its 60 ms queue lead after an observed audio
+underrun. The report records `audio.device.recoveries` and `recovery_bytes`.
+This absorbs short stalls; it cannot make a device that consistently produces
+audio too slowly keep real time. File replays and recorded WAV samples are unchanged.
+
 ## Find the code for your change
 
 Use the [architecture guide](architecture.md) to choose a starting point. The main areas are:
