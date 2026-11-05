@@ -16,6 +16,7 @@
 #include "d9g_draw_state.h"
 #include "d9g_format.h"
 #include "d9g_gpu.h"
+#include "d9g_index_range.h"
 #include "d9g_pipeline.h"
 #include "d9g_sampler.h"
 #include "d9g_shader.h"
@@ -373,11 +374,15 @@ public:
     uint32_t format() const { return fmt_; }
     bool locked() const { return lock_count_ != 0; }
     const std::vector<uint8_t>& source_bytes() const { return store_; }
+    bool index_range(uint32_t first, uint32_t count, uint32_t width, uint32_t& low, uint32_t& high) {
+        return index_ranges_.get(store_, first, count, width, low, high, !locked());
+    }
 
 protected:
     uint32_t len_, usage_, pool_, fmt_;
     uint32_t gpu_;
     std::vector<uint8_t> store_;
+    IndexRangeCache index_ranges_;
     uint32_t lock_count_ = 0, dirty_lo_ = 0, dirty_hi_ = 0;
 };
 using VertexBuffer = BufferBase<D9gStub_IDirect3DVertexBuffer9, IDirect3DVertexBuffer9, I_VB, D3DVERTEXBUFFER_DESC>;

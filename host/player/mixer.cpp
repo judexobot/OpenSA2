@@ -205,7 +205,9 @@ void Sa2Mixer::render_to(uint64_t virtual_us) {
     xa_acc_.assign(size_t(count) * 2, 0.0f);
     for (auto& [addr, b] : ds_) render_ds(b, n_, target, ds_acc_);
     for (auto& [addr, v] : xa_) render_xa(v, n_, target, xa_acc_);
-    block_.reserve(block_.size() + size_t(count) * 2);
+    // Keep geometric growth across the many AUDIO records between two FRAMEs.
+    // Reserving the exact size here reallocates and copies the accumulated mix
+    // for almost every record during the first (potentially long) frame.
     for (uint64_t i = 0; i < count; i++) {
         const float dl = ds_acc_[2 * i], dr = ds_acc_[2 * i + 1];
         const float xl = xa_acc_[2 * i], xr = xa_acc_[2 * i + 1];
@@ -270,7 +272,18 @@ void Sa2Mixer::render_ds(DsBuf& b, uint64_t n0, uint64_t n1, std::vector<float>&
         ds_unsupported_samples_ += n1 - n0;
         return;
     }
-    const u128 frame_units = u128(s.block_align) * kUnitsPerSec;
+    const uint64_t frame_units = uint64_t(s.block_align) * kUnitsPerSec;
+    const uint64_t bytes_units = uint64_t(s.bytes) * kUnitsPerSec;
+    const uint64_t anchor = u64of(s.anchor_us_lo, s.anchor_us_hi) * kUnitsPerUs;
+    const uint64_t rate = kBreakClock ? uint64_t(s.samples_per_sec) * s.block_align : s.avg_bytes_per_sec;
+    const uint64_t first_time = origin_us_ * kUnitsPerUs + kUnitsPerSample * n0;
+    const DsPos first = ds_position(s, first_time);
+    if (first.halted) { b.halted_seen = true; return; }
+    // ds_position reduces a loop, or proves a non-looping position is in range.
+    // Both fit in 64 bits: even UINT32_MAX bytes * 6,000,000 is below 2^55.
+    // Advance that exact integer clock instead of doing 128-bit division and
+    // modulo for every sample (software division on Android arm64).
+    uint64_t total = uint64_t(first.total);
     const uint64_t nframes = s.bytes / s.block_align;
     const bool exact = uint64_t(s.avg_bytes_per_sec) == uint64_t(kRate) * s.block_align;
     const auto it = s.mem ? stores_.find(s.mem) : stores_.end();
@@ -278,19 +291,21 @@ void Sa2Mixer::render_ds(DsBuf& b, uint64_t n0, uint64_t n1, std::vector<float>&
     const double g = kBreakGain ? 1.0 : db_gain(b.volume);
     const float gl = kBreakGain ? 1.0f : float(g * (b.pan > 0 ? db_gain(-b.pan) : 1.0));
     const float gr = kBreakGain ? 1.0f : float(g * (b.pan < 0 ? db_gain(b.pan) : 1.0));
-    for (uint64_t n = n0; n < n1; n++) {
-        const DsPos q = ds_position(s, origin_us_ * kUnitsPerUs + kUnitsPerSample * n);
-        if (q.halted) {
+    for (uint64_t n = n0, t = first_time; n < n1; n++, t += kUnitsPerSample) {
+        if (n != n0 && t > anchor)
+            total += std::min(kUnitsPerSample, t - anchor) * rate;
+        if (s.looping && !kBreakNoWrap && total >= bytes_units) total %= bytes_units;
+        if (total >= bytes_units) {
             b.halted_seen = true;
             break;                               // the buffer ran out: silent from here on
         }
         if (!have_store) { ds_no_store_samples_++; continue; }
-        const uint64_t fi = uint64_t(q.total / frame_units);
+        const uint64_t fi = total / frame_units;
         float l, r;
         ds_frame(b, it->second, fi, &l, &r);
         if (!exact && !kBreakNoLerp) {
             ds_resampled_samples_++;
-            const double frac = double(uint64_t(q.total % frame_units)) / double(frame_units);
+            const double frac = double(total % frame_units) / double(frame_units);
             uint64_t f2 = fi + 1;
             if (f2 >= nframes) f2 = s.looping ? 0 : fi;
             float l2, r2;

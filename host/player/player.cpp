@@ -245,7 +245,9 @@
 // depth each time a block was queued, and its shortfalls: requests of the device the
 // queue fell more than a frame short of while the replay was feeding it, counted in
 // SDL's get callback, each a gap the listener heard) and the WAV's, and is there
-// only when sound is asked for; without either option a version 1 stream plays
+// only when sound is asked for. A live underrun restores the missing queue lead
+// with silence, counted as recoveries and recovery_bytes; it never alters a WAV
+// or a file replay. Without either option a version 1 stream plays
 // exactly as it did before sound existed, and a version 2 stream's AUDIO records are
 // counted and held to the header's table and nothing more. The WAV's .json names its
 // first sample's virtual time and the first FRAME's, which
@@ -1446,6 +1448,7 @@ private:
     SDL_AudioStream* audio_stream_ = nullptr;
     std::string audio_driver_, audio_failure_;
     uint64_t audio_records_ = 0, audio_blocks_ = 0, audio_bytes_queued_ = 0;
+    uint64_t audio_shortfalls_seen_ = 0, audio_recoveries_ = 0, audio_recovery_bytes_ = 0;
     uint64_t audio_dropped_ = 0, audio_drain_wait_ms_ = 0, audio_tail_wait_ms_ = 0;
     int audio_queued_at_end_ = 0;
     // the device's lead, the sound before the first Present (the WAV's alone), the
@@ -5072,10 +5075,10 @@ void Player::audio_block() {
         wav_open_ = false;
     }
     if (wav_open_ && frame_ % 100 == 0) wav_.flush();
+    static const std::vector<float> lead(size_t(Sa2Mixer::kRate) * kAudioLeadMs / 1000 * Sa2Mixer::kChannels, 0.0f);
     if (audio_stream_ && !audio_lead_queued_) {
         audio_lead_queued_ = true;
         audio_pre_first_samples_ = blk.size() / 2;
-        const std::vector<float> lead(size_t(Sa2Mixer::kRate) * kAudioLeadMs / 1000 * Sa2Mixer::kChannels, 0.0f);
         if (SDL_PutAudioStreamData(audio_stream_, lead.data(), int(lead.size() * sizeof(float))))
             audio_tap_.feeding.store(true, std::memory_order_relaxed);
         else if (audio_failure_.empty())
@@ -5091,11 +5094,29 @@ void Player::audio_block() {
         }
         if (queued > kAudioQueueBound) {
             audio_dropped_++;
-        } else if (SDL_PutAudioStreamData(audio_stream_, blk.data(), bytes)) {
-            audio_blocks_++;
-            audio_bytes_queued_ += uint64_t(bytes);
-        } else if (audio_failure_.empty()) {
-            audio_failure_ = strf("SDL_PutAudioStreamData: %s", SDL_GetError());
+        } else {
+            const uint64_t shortfalls = audio_tap_.shortfalls.load(std::memory_order_relaxed);
+            // After a live stall SDL has consumed the original lead. Restore only
+            // the missing part, once per observed underrun, so subsequent frames
+            // have a cushion again. A file replay and its WAV keep their timing.
+            if (rd_.live() && queued >= 0 && shortfalls != audio_shortfalls_seen_) {
+                const int padding = int(lead.size() * sizeof(float)) - queued - bytes;
+                if (padding > 0) {
+                    if (SDL_PutAudioStreamData(audio_stream_, lead.data(), padding)) {
+                        audio_recoveries_++;
+                        audio_recovery_bytes_ += uint64_t(padding);
+                    } else if (audio_failure_.empty()) {
+                        audio_failure_ = strf("SDL_PutAudioStreamData: %s", SDL_GetError());
+                    }
+                }
+            }
+            audio_shortfalls_seen_ = shortfalls;
+            if (SDL_PutAudioStreamData(audio_stream_, blk.data(), bytes)) {
+                audio_blocks_++;
+                audio_bytes_queued_ += uint64_t(bytes);
+            } else if (audio_failure_.empty()) {
+                audio_failure_ = strf("SDL_PutAudioStreamData: %s", SDL_GetError());
+            }
         }
     }
     mixer_->clear_block();
@@ -5177,13 +5198,15 @@ std::string Player::audio_json() const {
                   "\"pre_first_frame_samples\": %" PRIu64 ", \"tail_samples\": %" PRIu64 ", \"blocks_queued\": %" PRIu64
                   ", \"bytes_queued\": %" PRIu64 ", \"blocks_dropped\": %" PRIu64 ", \"queue_before_block\": %s, "
                   "\"requests\": %" PRIu64 ", \"shortfalls\": %" PRIu64 ", \"shortfall_bytes\": %" PRIu64
+                  ", \"recoveries\": %" PRIu64 ", \"recovery_bytes\": %" PRIu64
                   ", \"queue_bound_bytes\": %d, \"queued_at_end\": %d, \"drain_wait_ms\": %" PRIu64
                   ", \"tail_wait_ms\": %" PRIu64 "}, ",
                   audio_stream_ ? "true" : "false", jstr(audio_driver_).c_str(),
                   audio_failure_.empty() ? "null" : jstr(audio_failure_).c_str(), kAudioLeadMs,
                   audio_pre_first_samples_, audio_tail_samples_, audio_blocks_, audio_bytes_queued_, audio_dropped_,
                   depth.c_str(), audio_tap_.requests.load(), audio_tap_.shortfalls.load(),
-                  audio_tap_.shortfall_bytes.load(), kAudioQueueBound, audio_queued_at_end_, audio_drain_wait_ms_,
+                  audio_tap_.shortfall_bytes.load(), audio_recoveries_, audio_recovery_bytes_,
+                  kAudioQueueBound, audio_queued_at_end_, audio_drain_wait_ms_,
                   audio_tail_wait_ms_);
     }
     else
