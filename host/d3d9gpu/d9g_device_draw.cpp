@@ -202,15 +202,8 @@ draw::Prepared Device::prepare_draw(uint32_t method, uint32_t prim, uint32_t str
                 } else if (indices_ && dip->indices.buffer.value == indices_->gpu_id()) {
                     if (indices_->locked()) reasons.push_back("LOCKED_INDEX_BUFFER");
                     const uint32_t width = dip->width == IndexWidth::U16 ? 2 : 4;
-                    const auto& data = indices_->source_bytes();
-                    const uint64_t end = (uint64_t(dip->first_index) + dip->count) * width;
-                    if (end <= data.size() && dip->count) {
-                        uint32_t min_index = UINT32_MAX, max_index = 0;
-                        for (uint32_t i = 0; i < dip->count; i++) {
-                            uint32_t index = 0;
-                            std::memcpy(&index, data.data() + (uint64_t(dip->first_index) + i) * width, width);
-                            min_index = std::min(min_index, index); max_index = std::max(max_index, index);
-                        }
+                    uint32_t min_index = 0, max_index = 0;
+                    if (indices_->index_range(dip->first_index, dip->count, width, min_index, max_index)) {
                         low = int64_t(min_index) + dip->base_vertex;
                         high = int64_t(max_index) + dip->base_vertex;
                     }

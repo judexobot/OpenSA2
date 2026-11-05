@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the changed player and mixer for Android arm64, without private game inputs.
+"""Compile the changed player, mixer and renderer for Android arm64 without game inputs.
 
 This is a compilation check, not an APK build. Its expectation header is a
 compile-only fixture; the objects must never be packaged as a playable build.
@@ -58,6 +58,7 @@ def main():
     spec = importlib.util.spec_from_file_location("android_app", ROOT / "tools/s8/android_app.py")
     android = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(android)
+    run("python3", ROOT / "host/d3d9gpu/gen_com.py", "--header", dxvk / "include/native/directx/d3d9.h", "--out", out)
     (out / "sa2_host_expectations.h").write_text(
         "// Compile-only fixture. Never use in a playable build.\n"
         "#pragma once\nnamespace sa2_host_expected {\n"
@@ -67,14 +68,16 @@ def main():
     flags = ["-std=c++17", "-O2", "-fPIC", "-Wall", "-Wextra", "-Wno-unused-parameter",
              "-DSA2_PLAYER_GPU=1", "-DSDL_MAIN_HANDLED", "-Dmain=sa2_player_main",
              f"-I{headers}", f"-I{out}", f"-I{ROOT / 'host'}", f"-I{ROOT / 'host/player'}",
+             f"-I{ROOT / 'host/d3d9gpu'}",
              f"-I{dxvk / 'include/native/windows'}", f"-I{dxvk / 'include/native/directx'}"]
-    for name in ("mixer", "player"):
-        rel = f"host/player/{name}.cpp"
+    for rel in ("host/player/mixer.cpp", "host/player/player.cpp",
+                "host/d3d9gpu/d9g_device_draw.cpp", "host/d3d9gpu/d9g_resources.cpp"):
+        name = Path(rel).stem
         source = out / f"{name}.cpp"
         source.write_text(android.arm_portable(rel, (ROOT / rel).read_text()))
         print(f"Compiling {rel} for Android arm64", flush=True)
         run(compiler, *flags, "-c", source, "-o", out / f"{name}.o")
-    print("Android arm64 compilation passed (player and mixer objects; no APK).")
+    print("Android arm64 compilation passed (player, mixer and renderer objects; no APK).")
 
 
 if __name__ == "__main__":

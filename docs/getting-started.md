@@ -47,11 +47,12 @@ Use a Linux development machine with Bash, GCC, a C++17 compiler available as `g
 
 The tests build the installer and launcher in temporary directories. They use small synthetic files, hand-built PE images, and stand-ins for the game and player. The command runs the source-only component cases. Comparisons against a local game installation, SDL3 dialog integration, and Windows cross-compilation cases remain in the test modules but are deselected here because they require additional local inputs. A passing result does not run the game or prove gameplay compatibility.
 
-## Audio checks on GitHub Actions
+## Performance checks on GitHub Actions
 
-The **Audio performance and Android compilation** workflow runs the synthetic
+The **Game performance and Android compilation** workflow runs the synthetic
 audio tests, including fractional sample rates and recovery after a live audio
-underrun. It also compiles the player and mixer for Android arm64 with NDK
+underrun, plus renderer index-bound and buffer invalidation tests. It also
+compiles the player, mixer and changed renderer units for Android arm64 with NDK
 28.2.13676358. It can be started with **Run workflow** once present on the default
 branch. Its summary distinguishes these checks from a complete game build.
 
@@ -64,6 +65,13 @@ The live player restores up to its 60 ms queue lead after an observed audio
 underrun. The report records `audio.device.recoveries` and `recovery_bytes`.
 This absorbs short stalls; it cannot make a device that consistently produces
 audio too slowly keep real time. File replays and recorded WAV samples are unchanged.
+
+The renderer caches the minimum and maximum vertex indices of unchanged index
+buffer slices. Each buffer holds at most 64 cached slices, allocated only for
+draws with at least 64 indices. Every successful buffer lock invalidates them;
+draws during a lock calculate fresh bounds. The workflow compares repeated-draw
+CPU cost and checks that the bounds stay identical. These synthetic timings do
+not measure game FPS or performance on a phone.
 
 ## Find the code for your change
 

@@ -1,4 +1,4 @@
-name: Audio performance and Android compilation
+name: Game performance and Android compilation
 
 on:
   push:
@@ -39,15 +39,21 @@ jobs:
           PY
       - name: Check public source
         run: .venv/bin/python tools/public_check.py
-      - name: Compile and test audio with synthetic streams
+      - name: Test audio and renderer performance
         run: |
           .venv/bin/python -m pytest -q \
             Documentation/scripts/tests/test_s5_audio.py \
             Documentation/scripts/tests/test_audio_queue_recovery.py \
+            Documentation/scripts/tests/test_render_index_cache.py \
             --junitxml=private/generated/audio-tests.xml
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
       - name: Install the pinned Android NDK
         run: sdkmanager 'ndk;28.2.13676358'
-      - name: Compile player and mixer for Android arm64
+      - name: Compile player, mixer and renderer for Android arm64
         run: .venv/bin/python tools/ci/check_android_audio.py --ndk "$ANDROID_HOME/ndk/28.2.13676358"
       - name: Compare mixer performance and exact WAV output
         run: |
@@ -60,13 +66,15 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write(f"Synthetic mixer benchmark: {result['speedup']:.2f}x baseline speed; WAV output is byte-identical.\n\n")
               summary.write('Measured on the Linux CI runner, not on an Android phone.\n\n')
+              render = json.loads(Path('private/generated/ci/render-benchmark.json').read_text())
+              summary.write(f"Repeated index bounds: {render['baseline_ms']:.3f} ms before, {render['cached_ms']:.3f} ms cached, with identical bounds. This measures this CPU operation only, not game FPS.\n\n")
           PY
       - name: Explain the build scope
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           This workflow compiles and tests the audio code, and compiles the player
-          and mixer for Android arm64. It does **not** generate a playable APK.
+          mixer and renderer for Android arm64. It does **not** generate a playable APK.
           The complete app still needs the private translated game inputs,
           executable verification inputs, and the full host dependency build
           documented in `docs/getting-started.md`.

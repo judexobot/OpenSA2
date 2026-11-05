@@ -503,6 +503,7 @@ HRESULT STDMETHODCALLTYPE BufferBase<Stub, Com, I, Desc>::Lock(UINT offset, UINT
         if (dirty_hi_ <= dirty_lo_) { dirty_lo_ = lo; dirty_hi_ = hi; }
         else { dirty_lo_ = std::min(dirty_lo_, lo); dirty_hi_ = std::max(dirty_hi_, hi); }
     }
+    index_ranges_.invalidate();
     *data = store_.data() + offset;
     lock_count_++;
     return answer(I, 11, D3D_OK);
